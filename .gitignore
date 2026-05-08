@@ -2,3 +2,8 @@ rendered/
 tmp/
 __pycache__/
 *.pyc
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
