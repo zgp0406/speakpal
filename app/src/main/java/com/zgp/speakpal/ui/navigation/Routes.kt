@@ -6,6 +6,7 @@ object Routes {
     const val Practice = "practice"
     const val Result = "result"
     const val Records = "records"
+    const val Profile = "profile"
 
     const val PracticeWithWord = "practice/{wordId}"
     const val ResultWithArgs = "result/{wordId}/{score}"
