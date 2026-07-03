@@ -1,6 +1,7 @@
 package com.zgp.speakpal.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,14 +17,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.zgp.speakpal.audio.AudioPlaybackController
 import com.zgp.speakpal.data.PracticeRecord
-import com.zgp.speakpal.data.SamplePracticeRecords
+import com.zgp.speakpal.data.PracticeRecordStore
 
 @Composable
 fun RecordsScreen(
@@ -32,7 +40,16 @@ fun RecordsScreen(
     onOpenTraining: () -> Unit,
     onOpenProfile: () -> Unit,
 ) {
-    val records = SamplePracticeRecords.all
+    val context = LocalContext.current
+    val records = remember { PracticeRecordStore(context).getAll() }
+    val averageScore = records.map { it.score }.average().toInt()
+    val playback = remember { AudioPlaybackController() }
+    var playingRecordId by remember { mutableStateOf<Long?>(null) }
+    var playbackMessage by remember { mutableStateOf<String?>(null) }
+
+    DisposableEffect(Unit) {
+        onDispose { playback.release() }
+    }
 
     AppScreen {
         Column(
@@ -43,33 +60,55 @@ fun RecordsScreen(
         ) {
             ScreenTopBar(title = "练习记录", onBack = onBack, trailing = "▣")
 
-            SectionTitle("本周")
-            WeekStrip()
+            SectionTitle("最近练习", trailing = "按时间倒序")
 
             SoftCard {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                        Text("学习报告", color = AppText, fontWeight = FontWeight.Bold)
-                        Text("5.20 - 5.26 ˅", color = AppMuted, style = MaterialTheme.typography.bodySmall)
+                        Text("练习概览", color = AppText, fontWeight = FontWeight.Bold)
+                        Text("本机数据", color = AppMuted, style = MaterialTheme.typography.bodySmall)
                     }
                     Row(verticalAlignment = Alignment.Bottom) {
                         Text("78", color = AppText, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
                         Text(" 分  →  ", color = AppMuted)
-                        Text("${SamplePracticeRecords.averageScore}", color = AppText, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+                        Text("$averageScore", color = AppText, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
                         Text(" 分", color = AppMuted)
                         Box(modifier = Modifier.weight(1f))
-                        Text("提升 7 分 ›", color = AppGreen, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                        Text("共 ${records.size} 次 ›", color = AppGreen, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
                     }
-                    MetricBar("综合趋势", SamplePracticeRecords.averageScore, AppPurple)
+                    MetricBar("平均得分", averageScore, AppPurple)
                 }
+            }
+
+            playbackMessage?.let {
+                Text(it, color = AppMuted, style = MaterialTheme.typography.bodySmall)
             }
 
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                items(records) { record ->
-                    RecordRow(record)
+                items(records, key = { it.id }) { record ->
+                    RecordRow(
+                        record = record,
+                        isPlaying = playingRecordId == record.id,
+                        onPlay = {
+                            val path = record.audioPath
+                            if (path == null) {
+                                playbackMessage = "示例记录没有可回放的录音"
+                            } else {
+                                playingRecordId = record.id
+                                playbackMessage = "正在回放 ${record.wordText}"
+                                playback.play(path) {
+                                    playingRecordId = null
+                                    playbackMessage = "录音回放完成"
+                                }.onFailure {
+                                    playingRecordId = null
+                                    playbackMessage = it.message ?: "录音播放失败"
+                                }
+                            }
+                        },
+                    )
                 }
             }
 
@@ -85,30 +124,11 @@ fun RecordsScreen(
 }
 
 @Composable
-private fun WeekStrip() {
-    // 周历条用于快速定位本周练习记录。
-    val days = listOf("一" to "20", "二" to "21", "三" to "22", "四" to "23", "五" to "24", "六" to "25", "日" to "26")
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        days.forEach { (week, day) ->
-            val selected = week == "三"
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(week, color = AppMuted, style = MaterialTheme.typography.labelSmall)
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (selected) AppPurpleSoft else Color.Transparent),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(day, color = if (selected) AppPurpleDeep else AppText, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun RecordRow(record: PracticeRecord) {
+private fun RecordRow(
+    record: PracticeRecord,
+    isPlaying: Boolean,
+    onPlay: () -> Unit,
+) {
     // 单条记录展示分数、评级和回放入口。
     Row(
         modifier = Modifier
@@ -120,7 +140,11 @@ private fun RecordRow(record: PracticeRecord) {
     ) {
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(record.wordText.replaceFirstChar { it.uppercase() }, color = AppText, fontWeight = FontWeight.Bold)
-            Text(record.practicedAt, color = AppMuted, style = MaterialTheme.typography.bodySmall)
+            Text(
+                "${record.practicedAt}  ·  ${record.issuePhoneme}",
+                color = AppMuted,
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
         Text("得分 ${record.score}", color = AppText, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
         SpacerWidth(8)
@@ -135,10 +159,14 @@ private fun RecordRow(record: PracticeRecord) {
             modifier = Modifier
                 .size(34.dp)
                 .clip(CircleShape)
-                .background(AppPurpleSoft),
+                .background(if (record.audioPath == null) Color(0xFFF0F1F5) else AppPurpleSoft)
+                .clickable { onPlay() },
             contentAlignment = Alignment.Center,
         ) {
-            Text("▶", color = AppPurpleDeep)
+            Text(
+                if (isPlaying) "■" else "▶",
+                color = if (record.audioPath == null) AppMuted else AppPurpleDeep,
+            )
         }
     }
 }
